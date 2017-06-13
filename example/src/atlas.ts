@@ -26,8 +26,8 @@ export default class Atlas {
 	private scrollAtPanStart: Vec;
 	private lastPanDelta: Vec;
 	private inertiaCancelTimer: any;
-	private zoomExp: Vec;
-	private zoomExpInertia: Vec;
+	private zoom: Vec;
+	private zoomInertia: Vec;
 	private zoomCenter: Vec;
 	private nodeContentRule: CSSStyleRule;
 	private rectTree: RectTree<Node>;
@@ -42,8 +42,8 @@ export default class Atlas {
 		this.scroll = new Vec();
 		this.scrollInertia = new Vec();
 		this.lastPanDelta = new Vec();
-		this.zoomExp = new Vec();
-		this.zoomExpInertia = new Vec();
+		this.zoom = new Vec();
+		this.zoomInertia = new Vec();
 		this.zoomCenter = new Vec();
 
 		for (let sheet of document.styleSheets as any) {
@@ -80,20 +80,20 @@ export default class Atlas {
 		this.rectTree.insert(node.rect, node);
 	}
 
-	get zoom(): Vec {
+	get magnification(): Vec {
 		return new Vec(
-			Math.pow(2.0, this.zoomExp.x * config.zoomInertiaCoef),
-			Math.pow(2.0, this.zoomExp.y * config.zoomInertiaCoef)
+			Math.pow(2.0, this.zoom.x * config.zoomInertiaCoef),
+			Math.pow(2.0, this.zoom.y * config.zoomInertiaCoef)
 		);
 	}
 
 	get viewRect(): Rect {
-		let z = this.zoom;
-		let pos = this.scroll.div(z);
+		let mag = this.magnification;
+		let pos = this.scroll.div(mag);
 		let bound = this.container.getBoundingClientRect();
 		// let debug = 100;
 		// return new Rect(pos.x + debug / z.x, pos.y + debug / z.y, (bound.width - 2 * debug) / z.x, (bound.height - 2 * debug) / z.y);
-		return new Rect(pos.x, pos.y, bound.width / z.x, bound.height / z.y);
+		return new Rect(pos.x, pos.y, bound.width / mag.x, bound.height / mag.y);
 	}
 
 	mousePos(e:MouseEvent): Vec {
@@ -105,7 +105,7 @@ export default class Atlas {
 		this.scrollAtPanStart = this.scroll.clone();
 		this.lastPanDelta.setZero();
 		this.scrollInertia.setZero();
-		this.zoomExpInertia.setZero();
+		this.zoomInertia.setZero();
 	}
 
 	onPanMove(e: HammerInput) {
@@ -146,9 +146,9 @@ export default class Atlas {
 		}
 	}
 
-	onWheel(e:WheelEvent) {
+	onWheel(e: WheelEvent) {
 		this.zoomCenter = this.mousePos(e);
-		this.zoomExpInertia = this.zoomExpInertia.subXY(e.deltaY, e.deltaY);
+		this.zoomInertia = this.zoomInertia.subXY(e.deltaY, e.deltaY);
 		e.preventDefault();
 	}
 
@@ -159,21 +159,21 @@ export default class Atlas {
 			this.scrollInertia = this.scrollInertia.mulXY(r).setZeroIf(config.scrollEPS);
 		}
 		//
-		if (!this.zoomExpInertia.isZero()) {
-			let z0 = this.zoom;
-			this.zoomExp = this.zoomExp.add(this.zoomExpInertia.mulXY(delta));
-			let z1 = this.zoom;
-			this.scroll = this.scroll.add(this.zoomCenter).div(z0).mul(z1).sub(this.zoomCenter);
+		if (!this.zoomInertia.isZero()) {
+			let mag0 = this.magnification;
+			this.zoom = this.zoom.add(this.zoomInertia.mulXY(delta));
+			let mag1 = this.magnification;
+			this.scroll = this.scroll.add(this.zoomCenter).div(mag0).mul(mag1).sub(this.zoomCenter);
 			let r = Math.pow(1.0 - config.zoomInertiaDamping, delta);
-			this.zoomExpInertia = this.zoomExpInertia.mulXY(r).setZeroIf(config.zoomEPS);
+			this.zoomInertia = this.zoomInertia.mulXY(r).setZeroIf(config.zoomEPS);
 		}
 		//
 		this.element.style.left = (-this.scroll.x) + "px";
 		this.element.style.top = (-this.scroll.y) + "px";
-		let z = this.zoom;
-		this.element.style.transform = `scale(${z.x}, ${z.y})`;
-		this.nodeContentRule.style.display = z.size() < .5 ? "none" : "block";
-		this.nodeContentRule.style.transform = `scale(${1.0 / z.x}, ${1.0 / z.y})`;
+		let mag = this.magnification;
+		this.element.style.transform = `scale(${mag.x}, ${mag.y})`;
+		this.nodeContentRule.style.display = mag.size() < .5 ? "none" : "block";
+		this.nodeContentRule.style.transform = `scale(${1.0 / mag.x}, ${1.0 / mag.y})`;
 		let view = this.viewRect;
 		let {hide, show} = this.rectTree.update(view);
 		for (var n of hide) {
