@@ -3,6 +3,7 @@ import Rect from "./rect";
 export default class Node {
 
 	element: HTMLElement;
+	content: HTMLElement;
 	rect: Rect;
 
 	constructor(x: number, y: number, w: number, h: number, klass: string, html: string) {
@@ -10,7 +11,10 @@ export default class Node {
 		this.element = document.createElement("div");
 		this.element.classList.add("node");
 		this.element.classList.add(klass);
-		this.element.innerHTML = html;
+		this.content = document.createElement("div");
+		this.content.classList.add("node__content");
+		this.content.innerHTML = html;
+		this.element.appendChild(this.content);
 		this.updatePos();
 	}
 

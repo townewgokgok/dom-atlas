@@ -10,9 +10,11 @@
   "license": "MIT",
   "devDependencies": {
     "@types/hammerjs": "^2.0.34",
+    "@types/lodash": "^4.14.66",
     "binary-search-tree": "^0.2.6",
     "css-loader": "^0.28.4",
     "hammerjs": "^2.0.8",
+    "lodash": "^4.17.4",
     "style-loader": "^0.18.2",
     "stylus": "^0.54.5",
     "stylus-loader": "^3.0.1",
