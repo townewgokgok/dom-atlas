@@ -25,7 +25,7 @@ export default class Atlas {
 	private scrollInertia: Vec;
 	private scrollAtPanStart: Vec;
 	private lastPanDelta: Vec;
-	private inertiaCancelTimer: number;
+	private inertiaCancelTimer: any;
 	private zoomExp: Vec;
 	private zoomExpInertia: Vec;
 	private zoomCenter: Vec;
@@ -56,49 +56,12 @@ export default class Atlas {
 		}
 
 		this.hammer = new Hammer.Manager(this.container);
-
 		this.hammer.add(new Hammer.Pan({ direction: Hammer.DIRECTION_ALL, threshold: 0 }));
-		this.hammer.on("panstart", (e:HammerInput)=>{
-			this.scrollAtPanStart = this.scroll.clone();
-			this.lastPanDelta.setZero();
-			this.scrollInertia.setZero();
-			this.zoomExpInertia.setZero();
-		});
-		this.hammer.on("panmove", (e:HammerInput)=>{
-			let delta = new Vec(e.deltaX, e.deltaY);
-			this.scroll = this.scrollAtPanStart.sub(delta);
-			this.scrollInertia = this.lastPanDelta.sub(delta).mulXY(config.scrollInertiaCoef);
-			this.lastPanDelta = delta;
-			if (this.inertiaCancelTimer) {
-				clearTimeout(this.inertiaCancelTimer);
-			}
-			this.inertiaCancelTimer = setTimeout(()=>{
-				this.scrollInertia.setZero();
-				this.inertiaCancelTimer = null;
-			}, config.cancelInertiaTimeoutMSec);
-		});
-		this.hammer.on("panend", (e:HammerInput)=>{
-			this.scroll = this.scrollAtPanStart.subXY(e.deltaX, e.deltaY);
-			this.scrollAtPanStart = null;
-			if (this.inertiaCancelTimer) {
-				clearTimeout(this.inertiaCancelTimer);
-			}
-			this.inertiaCancelTimer = null;
-		});
-		this.hammer.on("pancancel", (e:HammerInput)=>{
-			this.scroll = this.scrollAtPanStart;
-			this.scrollAtPanStart = null;
-			if (this.inertiaCancelTimer) {
-				clearTimeout(this.inertiaCancelTimer);
-			}
-			this.inertiaCancelTimer = null;
-		});
-
-		addWheelListener(this.container, (e:WheelEvent)=>{
-			this.zoomCenter = this.mousePos(e);
-			this.zoomExpInertia = this.zoomExpInertia.subXY(e.deltaY, e.deltaY);
-			e.preventDefault();
-		});
+		this.hammer.on("panstart", this.onPanStart.bind(this));
+		this.hammer.on("panmove", this.onPanMove.bind(this));
+		this.hammer.on("panend", this.onPanEnd.bind(this));
+		this.hammer.on("pancancel", this.onPanCancel.bind(this));
+		addWheelListener(this.container, this.onWheel.bind(this));
 
 		let lastTimestamp = 0;
 		let tick = (timestamp: number)=>{
@@ -109,23 +72,12 @@ export default class Atlas {
 		window.requestAnimationFrame(tick);
 	}
 
-	onTick(delta: number) {
-		if (!this.scrollAtPanStart) {
-			this.scroll = this.scroll.add(this.scrollInertia.mulXY(delta));
-			let r = Math.pow(1.0 - config.scrollInertiaDamping, delta);
-			this.scrollInertia = this.scrollInertia.mulXY(r).setZeroIf(config.scrollEPS);
+	addNode(node: Node) {
+		this.nodes.push(node);
+		if (node.rect.intersects(this.viewRect)) {
+			this.element.appendChild(node.element);
 		}
-		//
-		if (!this.zoomExpInertia.isZero()) {
-			let z0 = this.zoom;
-			this.zoomExp = this.zoomExp.add(this.zoomExpInertia.mulXY(delta));
-			let z1 = this.zoom;
-			this.scroll = this.scroll.add(this.zoomCenter).div(z0).mul(z1).sub(this.zoomCenter);
-			let r = Math.pow(1.0 - config.zoomInertiaDamping, delta);
-			this.zoomExpInertia = this.zoomExpInertia.mulXY(r).setZeroIf(config.zoomEPS);
-		}
-		//
-		this.updateScroll();
+		this.rectTree.insert(node.rect, node);
 	}
 
 	get zoom(): Vec {
@@ -149,7 +101,73 @@ export default class Atlas {
 		return new Vec(e.clientX, e.clientY).subXY(bound.left, bound.top);
 	}
 
-	updateScroll() {
+	onPanStart(e: HammerInput) {
+		this.scrollAtPanStart = this.scroll.clone();
+		this.lastPanDelta.setZero();
+		this.scrollInertia.setZero();
+		this.zoomExpInertia.setZero();
+	}
+
+	onPanMove(e: HammerInput) {
+		let delta = new Vec(e.deltaX, e.deltaY);
+		if (this.scrollAtPanStart) {
+			this.scroll = this.scrollAtPanStart.sub(delta);
+			this.scrollInertia = this.lastPanDelta.sub(delta).mulXY(config.scrollInertiaCoef);
+		}
+		this.lastPanDelta = delta;
+		if (this.inertiaCancelTimer) {
+			clearTimeout(this.inertiaCancelTimer);
+		}
+		this.inertiaCancelTimer = setTimeout(()=>{
+			this.scrollInertia.setZero();
+			this.inertiaCancelTimer = null;
+		}, config.cancelInertiaTimeoutMSec);
+	}
+
+	onPanEnd(e: HammerInput) {
+		if (this.scrollAtPanStart) {
+			this.scroll = this.scrollAtPanStart.subXY(e.deltaX, e.deltaY);
+			this.scrollAtPanStart = null;
+		}
+		if (this.inertiaCancelTimer) {
+			clearTimeout(this.inertiaCancelTimer);
+			this.inertiaCancelTimer = null;
+		}
+	}
+
+	onPanCancel(e: HammerInput) {
+		if (this.scrollAtPanStart) {
+			this.scroll = this.scrollAtPanStart;
+			this.scrollAtPanStart = null;
+		}
+		if (this.inertiaCancelTimer) {
+			clearTimeout(this.inertiaCancelTimer);
+			this.inertiaCancelTimer = null;
+		}
+	}
+
+	onWheel(e:WheelEvent) {
+		this.zoomCenter = this.mousePos(e);
+		this.zoomExpInertia = this.zoomExpInertia.subXY(e.deltaY, e.deltaY);
+		e.preventDefault();
+	}
+
+	onTick(delta: number) {
+		if (!this.scrollAtPanStart) {
+			this.scroll = this.scroll.add(this.scrollInertia.mulXY(delta));
+			let r = Math.pow(1.0 - config.scrollInertiaDamping, delta);
+			this.scrollInertia = this.scrollInertia.mulXY(r).setZeroIf(config.scrollEPS);
+		}
+		//
+		if (!this.zoomExpInertia.isZero()) {
+			let z0 = this.zoom;
+			this.zoomExp = this.zoomExp.add(this.zoomExpInertia.mulXY(delta));
+			let z1 = this.zoom;
+			this.scroll = this.scroll.add(this.zoomCenter).div(z0).mul(z1).sub(this.zoomCenter);
+			let r = Math.pow(1.0 - config.zoomInertiaDamping, delta);
+			this.zoomExpInertia = this.zoomExpInertia.mulXY(r).setZeroIf(config.zoomEPS);
+		}
+		//
 		this.element.style.left = (-this.scroll.x) + "px";
 		this.element.style.top = (-this.scroll.y) + "px";
 		let z = this.zoom;
@@ -168,14 +186,6 @@ export default class Atlas {
 				this.element.appendChild(n.element);
 			}
 		}
-	}
-	
-	addNode(node: Node) {
-		this.nodes.push(node);
-		if (node.rect.intersects(this.viewRect)) {
-			this.element.appendChild(node.element);
-		}
-		this.rectTree.insert(node.rect, node);
 	}
 
 }
