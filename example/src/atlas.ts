@@ -1,10 +1,9 @@
-import {AVLTree} from "binary-search-tree";
 import * as Hammer from "hammerjs";
 import {addWheelListener} from "wheel";
-import * as _ from "lodash";
 import Vec from "./vec";
 import Rect from "./rect";
 import Node from "./node";
+import RectTree from "./recttree";
 
 export default class Atlas {
 	
@@ -12,15 +11,11 @@ export default class Atlas {
 	element: HTMLElement;
 	hammer: HammerManager;
 	nodes: Node[];
-	posMapL: AVLTree<number, Node>;
-	posMapR: AVLTree<number, Node>;
-	posMapT: AVLTree<number, Node>;
-	posMapB: AVLTree<number, Node>;
 	scroll: Vec;
 	scrollAtStart: Vec;
 	zoomExp: Vec;
 	nodeContentRule: CSSStyleRule;
-	beforeViewRect: Rect;
+	rectTree: RectTree<Node>;
 
 	constructor(id: string) {
 		this.element = document.createElement("div");
@@ -28,10 +23,7 @@ export default class Atlas {
 		this.container = document.getElementById(id);
 		this.container.appendChild(this.element);
 		this.nodes = [];
-		this.posMapL = new AVLTree<number, Node>({});
-		this.posMapR = new AVLTree<number, Node>({});
-		this.posMapT = new AVLTree<number, Node>({});
-		this.posMapB = new AVLTree<number, Node>({});
+		this.rectTree = new RectTree<Node>();
 		this.scroll = new Vec(.0, .0);
 		this.zoomExp = new Vec(.0, .0);
 
@@ -78,12 +70,16 @@ export default class Atlas {
 
 		let lastTimestamp = 0;
 		let tick = (timestamp: number)=>{
-			// this.scroll.x += delta * 50;
-			// this.updateScroll();
+			this.onTick(timestamp - lastTimestamp);
 			lastTimestamp = timestamp;
 			window.requestAnimationFrame(tick);
 		};
 		window.requestAnimationFrame(tick);
+	}
+
+	onTick(delta: number) {
+		// this.scroll.x += delta * 50;
+		this.updateScroll();
 	}
 
 	get zoom(): Vec {
@@ -108,92 +104,32 @@ export default class Atlas {
 	}
 
 	updateScroll() {
-		let r0 = this.beforeViewRect;
 		this.element.style.left = (-this.scroll.x) + "px";
 		this.element.style.top = (-this.scroll.y) + "px";
 		let z = this.zoom;
 		this.element.style.transform = `scale(${z.x}, ${z.y})`;
 		this.nodeContentRule.style.display = z.size() < .5 ? "none" : "block";
 		this.nodeContentRule.style.transform = `scale(${1.0 / z.x}, ${1.0 / z.y})`;
-		let r1 = this.viewRect;
-
-		// before: r0-----------------r0
-		// after :  |       r1--------+--------r1
-		//          |  hide<-|        |->show  |
-		//             [NODE]                 [NODE]
-		//                  ^A               B^
-		//
-		// before:          r0-----------------r0
-		// after : r1--------+--------r1       |
-		//          |  show<-|        |->hide  |
-		//      [NODE]                 [NODE]
-		//           ^C               D^
-
-		let hide: Node[] = [];
-		let show: Node[] = [];
-
-		if (!r0) {
-			show = _.intersection(
-				this.posMapL.betweenBounds({ $lt: r1.right }),
-				this.posMapR.betweenBounds({ $gt: r1.left }),
-				this.posMapT.betweenBounds({ $lt: r1.bottom }),
-				this.posMapB.betweenBounds({ $gt: r1.top })
-			);
-		}
-		else {
-
-			if (r0.left < r1.left) { // hide A
-				hide = this.posMapR.betweenBounds({ $gt: r0.left, $lte: r1.left });
-			}
-			if (r1.right < r0.right) { // hide D
-				hide = _.union(hide, this.posMapL.betweenBounds({ $gte: r1.right, $lt: r0.right }));
-			}
-			if (r0.right < r1.right) { // show B
-				show = this.posMapL.betweenBounds({ $gte: r0.right, $lt: r1.right });
-			}
-			if (r1.left < r0.left) { // show C
-				show = _.union(show, this.posMapR.betweenBounds({ $gt: r1.left, $lte: r0.left }));
-			}
-
-			if (r0.top < r1.top) { // hide A
-				hide = _.union(hide, this.posMapB.betweenBounds({ $gt: r0.top, $lte: r1.top }));
-			}
-			if (r1.bottom < r0.bottom) { // hide D
-				hide = _.union(hide, this.posMapT.betweenBounds({ $gte: r1.bottom, $lt: r0.bottom }));
-			}
-			if (r0.bottom < r1.bottom) { // show B
-				show = _.union(show, this.posMapT.betweenBounds({ $gte: r0.bottom, $lt: r1.bottom }));
-			}
-			if (r1.top < r0.top) { // show C
-				show = _.union(show, this.posMapB.betweenBounds({ $gt: r1.top, $lte: r0.top }));
-			}
-
-			show = _.difference(show, hide);
-
-			for (var n of hide) {
-				if (n.element && n.element.parentNode) n.element.parentNode.removeChild(n.element);
+		let view = this.viewRect;
+		let {hide, show} = this.rectTree.update(view);
+		for (var n of hide) {
+			if (n.element && n.element.parentNode) {
+				n.element.parentNode.removeChild(n.element);
 			}
 		}
-
 		for (var n of show) {
-			if (!n.element.parentNode && r1.left < n.rect.right && n.rect.left < r1.right && r1.top < n.rect.bottom && n.rect.top < r1.bottom) {
+			if (!n.element.parentNode && n.rect.intersects(view)) {
 				this.element.appendChild(n.element);
 			}
 		}
-
-		this.beforeViewRect = r1;
 	}
 	
 	addNode(node: Node) {
 		this.nodes.push(node);
-		let r = this.viewRect;
-		if (r.left < node.rect.right && node.rect.left < r.right && r.top < node.rect.bottom && node.rect.top < r.bottom) {
+		if (node.rect.intersects(this.viewRect)) {
 			this.element.appendChild(node.element);
 		}
-		this.posMapL.insert(node.rect.left, node);
-		this.posMapR.insert(node.rect.right, node);
-		this.posMapT.insert(node.rect.top, node);
-		this.posMapB.insert(node.rect.bottom, node);
+		this.rectTree.insert(node.rect, node);
 	}
 
 }
