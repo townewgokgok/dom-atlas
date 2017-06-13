@@ -5,17 +5,32 @@ import Rect from "./rect";
 import Node from "./node";
 import RectTree from "./recttree";
 
+const config = {
+	cancelInertiaTimeoutMSec: 100,
+	scrollInertiaCoef: .1,
+	scrollInertiaDamping: .002,
+	zoomInertiaCoef: 0.000015,
+	zoomInertiaDamping: .01,
+	scrollEPS: .03,
+	zoomEPS: 10.0
+};
+
 export default class Atlas {
-	
-	container: HTMLElement;
-	element: HTMLElement;
-	hammer: HammerManager;
-	nodes: Node[];
-	scroll: Vec;
-	scrollAtStart: Vec;
-	zoomExp: Vec;
-	nodeContentRule: CSSStyleRule;
-	rectTree: RectTree<Node>;
+
+	private container: HTMLElement;
+	private element: HTMLElement;
+	private hammer: HammerManager;
+	private nodes: Node[];
+	private scroll: Vec;
+	private scrollInertia: Vec;
+	private scrollAtPanStart: Vec;
+	private lastPanDelta: Vec;
+	private inertiaCancelTimer: number;
+	private zoomExp: Vec;
+	private zoomExpInertia: Vec;
+	private zoomCenter: Vec;
+	private nodeContentRule: CSSStyleRule;
+	private rectTree: RectTree<Node>;
 
 	constructor(id: string) {
 		this.element = document.createElement("div");
@@ -24,8 +39,12 @@ export default class Atlas {
 		this.container.appendChild(this.element);
 		this.nodes = [];
 		this.rectTree = new RectTree<Node>();
-		this.scroll = new Vec(.0, .0);
-		this.zoomExp = new Vec(.0, .0);
+		this.scroll = new Vec();
+		this.scrollInertia = new Vec();
+		this.lastPanDelta = new Vec();
+		this.zoomExp = new Vec();
+		this.zoomExpInertia = new Vec();
+		this.zoomCenter = new Vec();
 
 		for (let sheet of document.styleSheets as any) {
 			for (let rule of sheet.cssRules) {
@@ -40,31 +59,44 @@ export default class Atlas {
 
 		this.hammer.add(new Hammer.Pan({ direction: Hammer.DIRECTION_ALL, threshold: 0 }));
 		this.hammer.on("panstart", (e:HammerInput)=>{
-			this.scrollAtStart = this.scroll.clone();
+			this.scrollAtPanStart = this.scroll.clone();
+			this.lastPanDelta.setZero();
+			this.scrollInertia.setZero();
+			this.zoomExpInertia.setZero();
 		});
 		this.hammer.on("panmove", (e:HammerInput)=>{
-			this.scroll = this.scrollAtStart.subXY(e.deltaX, e.deltaY);
-			this.updateScroll();
+			let delta = new Vec(e.deltaX, e.deltaY);
+			this.scroll = this.scrollAtPanStart.sub(delta);
+			this.scrollInertia = this.lastPanDelta.sub(delta).mulXY(config.scrollInertiaCoef);
+			this.lastPanDelta = delta;
+			if (this.inertiaCancelTimer) {
+				clearTimeout(this.inertiaCancelTimer);
+			}
+			this.inertiaCancelTimer = setTimeout(()=>{
+				this.scrollInertia.setZero();
+				this.inertiaCancelTimer = null;
+			}, config.cancelInertiaTimeoutMSec);
 		});
 		this.hammer.on("panend", (e:HammerInput)=>{
-			this.scroll = this.scrollAtStart.subXY(e.deltaX, e.deltaY);
-			this.scrollAtStart = null;
-			this.updateScroll();
+			this.scroll = this.scrollAtPanStart.subXY(e.deltaX, e.deltaY);
+			this.scrollAtPanStart = null;
+			if (this.inertiaCancelTimer) {
+				clearTimeout(this.inertiaCancelTimer);
+			}
+			this.inertiaCancelTimer = null;
 		});
 		this.hammer.on("pancancel", (e:HammerInput)=>{
-			this.scroll = this.scrollAtStart;
-			this.scrollAtStart = null;
-			this.updateScroll();
+			this.scroll = this.scrollAtPanStart;
+			this.scrollAtPanStart = null;
+			if (this.inertiaCancelTimer) {
+				clearTimeout(this.inertiaCancelTimer);
+			}
+			this.inertiaCancelTimer = null;
 		});
 
 		addWheelListener(this.container, (e:WheelEvent)=>{
-			let mp = this.mousePos(e);
-			let z0 = this.zoom;
-			this.zoomExp.x -= e.deltaY;
-			this.zoomExp.y -= e.deltaY;
-			let z1 = this.zoom;
-			this.scroll = this.scroll.add(mp).div(z0).mul(z1).sub(mp);
-			this.updateScroll();
+			this.zoomCenter = this.mousePos(e);
+			this.zoomExpInertia = this.zoomExpInertia.subXY(e.deltaY, e.deltaY);
 			e.preventDefault();
 		});
 
@@ -78,14 +110,28 @@ export default class Atlas {
 	}
 
 	onTick(delta: number) {
-		// this.scroll.x += delta * 50;
+		if (!this.scrollAtPanStart) {
+			this.scroll = this.scroll.add(this.scrollInertia.mulXY(delta));
+			let r = Math.pow(1.0 - config.scrollInertiaDamping, delta);
+			this.scrollInertia = this.scrollInertia.mulXY(r).setZeroIf(config.scrollEPS);
+		}
+		//
+		if (!this.zoomExpInertia.isZero()) {
+			let z0 = this.zoom;
+			this.zoomExp = this.zoomExp.add(this.zoomExpInertia.mulXY(delta));
+			let z1 = this.zoom;
+			this.scroll = this.scroll.add(this.zoomCenter).div(z0).mul(z1).sub(this.zoomCenter);
+			let r = Math.pow(1.0 - config.zoomInertiaDamping, delta);
+			this.zoomExpInertia = this.zoomExpInertia.mulXY(r).setZeroIf(config.zoomEPS);
+		}
+		//
 		this.updateScroll();
 	}
 
 	get zoom(): Vec {
 		return new Vec(
-			Math.pow(2.0, this.zoomExp.x / 200.0),
-			Math.pow(2.0, this.zoomExp.y / 200.0)
+			Math.pow(2.0, this.zoomExp.x * config.zoomInertiaCoef),
+			Math.pow(2.0, this.zoomExp.y * config.zoomInertiaCoef)
 		);
 	}
 

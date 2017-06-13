@@ -3,7 +3,7 @@ export default class Vec {
 	x: number;
 	y: number;
 
-	constructor(x: number, y:number) {
+	constructor(x: number=.0, y:number=.0) {
 		this.set(x, y);
 	}
 
@@ -14,6 +14,21 @@ export default class Vec {
 	set(x: number, y:number): Vec {
 		this.x = x;
 		this.y = y;
+		return this;
+	}
+
+	isZero(): boolean {
+		return this.x == .0 && this.y == .0
+	}
+
+	setZero(): Vec {
+		this.x = .0;
+		this.y = .0;
+		return this;
+	}
+
+	setZeroIf(eps: number): Vec {
+		if (this.size() < eps) this.setZero();
 		return this;
 	}
 
@@ -41,7 +56,8 @@ export default class Vec {
 		return new Vec(this.x * v.x, this.y * v.y);
 	}
 
-	mulXY(x: number, y: number): Vec {
+	mulXY(x: number, y?: number): Vec {
+		if (y == null) y = x;
 		return new Vec(this.x * x, this.y * y);
 	}
 
