@@ -11,6 +11,10 @@ export default class Vec {
 		return new Vec(this.x, this.y);
 	}
 
+	equals(v: Vec): boolean {
+		return this.x==v.x && this.y==v.y;
+	}
+
 	set(x: number, y:number): Vec {
 		this.x = x;
 		this.y = y;
@@ -30,6 +34,10 @@ export default class Vec {
 	setZeroIf(eps: number): Vec {
 		if (this.size() < eps) this.setZero();
 		return this;
+	}
+
+	static get nan(): Vec {
+		return new Vec(NaN, NaN);
 	}
 
 	size(): number {

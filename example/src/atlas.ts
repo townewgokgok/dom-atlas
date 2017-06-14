@@ -6,13 +6,30 @@ import Node from "./node";
 import RectTree from "./recttree";
 
 const config = {
-	cancelInertiaTimeoutMSec: 100,
-	scrollInertiaCoef: .1,
-	scrollInertiaDamping: .002,
-	zoomInertiaCoef: 0.000015,
-	zoomInertiaDamping: .01,
-	scrollEPS: .03,
-	zoomEPS: 10.0
+	scroll: {
+		panInputCoef: 100.0,
+		wheelInputCoef: 2.0,
+		inertiaDamping: 2.0,
+		eps: .03,
+		inertiaCancelTimeoutMSec: 100,
+	},
+	zoom: {
+		inputCoef: .05,
+		inertiaDamping: 20.0,
+		eps: 10.0,
+	},
+	pullBack: {
+		staticExponentialBase: 2.0,
+		dynamicRate: 4.0
+	},
+	marginCoef: {
+		x: .2,
+		y: .2,
+	},
+	limitMargin: {
+		x: 100.0,
+		y: 100.0,
+	},
 };
 
 export default class Atlas {
@@ -22,15 +39,18 @@ export default class Atlas {
 	private hammer: HammerManager;
 	private nodes: Node[];
 	private scroll: Vec;
+	private scrollBefore: Vec;
 	private scrollInertia: Vec;
 	private scrollAtPanStart: Vec;
 	private lastPanDelta: Vec;
 	private inertiaCancelTimer: any;
 	private zoom: Vec;
+	private zoomBefore: Vec;
 	private zoomInertia: Vec;
 	private zoomCenter: Vec;
 	private nodeContentRule: CSSStyleRule;
 	private rectTree: RectTree<Node>;
+	private bound: Rect;
 
 	constructor(id: string) {
 		this.element = document.createElement("div");
@@ -40,11 +60,14 @@ export default class Atlas {
 		this.nodes = [];
 		this.rectTree = new RectTree<Node>();
 		this.scroll = new Vec();
+		this.scrollBefore = Vec.nan;
 		this.scrollInertia = new Vec();
 		this.lastPanDelta = new Vec();
 		this.zoom = new Vec();
+		this.zoomBefore = Vec.nan;
 		this.zoomInertia = new Vec();
 		this.zoomCenter = new Vec();
+		this.bound = new Rect();
 
 		for (let sheet of document.styleSheets as any) {
 			for (let rule of sheet.cssRules) {
@@ -63,10 +86,10 @@ export default class Atlas {
 		this.hammer.on("pancancel", this.onPanCancel.bind(this));
 		addWheelListener(this.container, this.onWheel.bind(this));
 
-		let lastTimestamp = 0;
-		let tick = (timestamp: number)=>{
-			this.onTick(timestamp - lastTimestamp);
-			lastTimestamp = timestamp;
+		let lastTimestampMSec = .0;
+		let tick = (timestampMSec: number)=>{
+			this.onTick((timestampMSec - lastTimestampMSec) / 1000.0);
+			lastTimestampMSec = timestampMSec;
 			window.requestAnimationFrame(tick);
 		};
 		window.requestAnimationFrame(tick);
@@ -78,27 +101,28 @@ export default class Atlas {
 			this.element.appendChild(node.element);
 		}
 		this.rectTree.insert(node.rect, node);
+		this.bound = this.bound.extend(node.rect);
 	}
 
-	get magnification(): Vec {
+	get scale(): Vec {
 		return new Vec(
-			Math.pow(2.0, this.zoom.x * config.zoomInertiaCoef),
-			Math.pow(2.0, this.zoom.y * config.zoomInertiaCoef)
+			Math.pow(2.0, this.zoom.x),
+			Math.pow(2.0, this.zoom.y)
 		);
 	}
 
 	get viewRect(): Rect {
-		let mag = this.magnification;
-		let pos = this.scroll.div(mag);
-		let bound = this.container.getBoundingClientRect();
+		let scale = this.scale;
+		let pos = this.scroll.div(scale);
+		let view = this.container.getBoundingClientRect();
 		// let debug = 100;
-		// return new Rect(pos.x + debug / z.x, pos.y + debug / z.y, (bound.width - 2 * debug) / z.x, (bound.height - 2 * debug) / z.y);
-		return new Rect(pos.x, pos.y, bound.width / mag.x, bound.height / mag.y);
+		// return new Rect(pos.x + debug / scale.x, pos.y + debug / scale.y, (view.width - 2 * debug) / scale.x, (view.height - 2 * debug) / scale.y);
+		return new Rect(pos.x, pos.y, view.width / scale.x, view.height / scale.y);
 	}
 
 	mousePos(e:MouseEvent): Vec {
-		let bound = this.container.getBoundingClientRect();
-		return new Vec(e.clientX, e.clientY).subXY(bound.left, bound.top);
+		let view = this.container.getBoundingClientRect();
+		return new Vec(e.clientX, e.clientY).subXY(view.left, view.top);
 	}
 
 	onPanStart(e: HammerInput) {
@@ -111,8 +135,12 @@ export default class Atlas {
 	onPanMove(e: HammerInput) {
 		let delta = new Vec(e.deltaX, e.deltaY);
 		if (this.scrollAtPanStart) {
-			this.scroll = this.scrollAtPanStart.sub(delta);
-			this.scrollInertia = this.lastPanDelta.sub(delta).mulXY(config.scrollInertiaCoef);
+			this.scroll = this.viewBound.pullBackStatic(
+				this.scrollAtPanStart.sub(delta),
+				this.limitMargin,
+				config.pullBack.staticExponentialBase
+			);
+			this.scrollInertia = this.lastPanDelta.sub(delta).mulXY(config.scroll.panInputCoef);
 		}
 		this.lastPanDelta = delta;
 		if (this.inertiaCancelTimer) {
@@ -121,12 +149,17 @@ export default class Atlas {
 		this.inertiaCancelTimer = setTimeout(()=>{
 			this.scrollInertia.setZero();
 			this.inertiaCancelTimer = null;
-		}, config.cancelInertiaTimeoutMSec);
+		}, config.scroll.inertiaCancelTimeoutMSec);
 	}
 
 	onPanEnd(e: HammerInput) {
+		let delta = new Vec(e.deltaX, e.deltaY);
 		if (this.scrollAtPanStart) {
-			this.scroll = this.scrollAtPanStart.subXY(e.deltaX, e.deltaY);
+			this.scroll = this.viewBound.pullBackStatic(
+				this.scrollAtPanStart.sub(delta),
+				this.limitMargin,
+				config.pullBack.staticExponentialBase
+			);
 			this.scrollAtPanStart = null;
 		}
 		if (this.inertiaCancelTimer) {
@@ -147,45 +180,77 @@ export default class Atlas {
 	}
 
 	onWheel(e: WheelEvent) {
-		this.zoomCenter = this.mousePos(e);
-		this.zoomInertia = this.zoomInertia.subXY(e.deltaY, e.deltaY);
+		if (e.shiftKey) {
+			let delta = new Vec(e.deltaY, e.deltaY);
+			this.zoomCenter = this.mousePos(e);
+			this.zoomInertia = this.zoomInertia.add(delta.mulXY(config.zoom.inputCoef));
+		}
+		else {
+			let delta = new Vec(e.deltaX, e.deltaY);
+			this.scrollInertia = this.scrollInertia.add(delta.mulXY(config.scroll.wheelInputCoef));
+		}
 		e.preventDefault();
 	}
 
-	onTick(delta: number) {
+	get limitMargin(): Vec {
+		return new Vec(config.limitMargin.x, config.limitMargin.y).mul(this.scale);
+	}
+
+	get viewBound(): Rect {
+		let view = Rect.fromClientRect(this.container.getBoundingClientRect());
+		let bound = this.bound.mul(this.scale);
+		bound.x -= view.w * config.marginCoef.x;
+		bound.y -= view.h * config.marginCoef.y;
+		bound.w += view.w * config.marginCoef.x * 2 - view.w;
+		bound.h += view.h * config.marginCoef.y * 2 - view.h;
+		return bound;
+	}
+
+	onTick(deltaSec: number) {
 		if (!this.scrollAtPanStart) {
-			this.scroll = this.scroll.add(this.scrollInertia.mulXY(delta));
-			let r = Math.pow(1.0 - config.scrollInertiaDamping, delta);
-			this.scrollInertia = this.scrollInertia.mulXY(r).setZeroIf(config.scrollEPS);
+			let scroll = this.scroll.add(this.scrollInertia.mulXY(deltaSec));
+			this.scroll = this.viewBound.pullBack(scroll, deltaSec, 1.0 - Math.pow(10.0, -config.pullBack.dynamicRate));
+			if (this.scroll.equals(scroll)) {
+				let r = Math.pow(Math.pow(10.0, -config.scroll.inertiaDamping), deltaSec);
+				this.scrollInertia = this.scrollInertia.mulXY(r).setZeroIf(config.scroll.eps);
+			}
+			else {
+				this.scrollInertia.setZero();
+			}
 		}
 		//
 		if (!this.zoomInertia.isZero()) {
-			let mag0 = this.magnification;
-			this.zoom = this.zoom.add(this.zoomInertia.mulXY(delta));
-			let mag1 = this.magnification;
-			this.scroll = this.scroll.add(this.zoomCenter).div(mag0).mul(mag1).sub(this.zoomCenter);
-			let r = Math.pow(1.0 - config.zoomInertiaDamping, delta);
-			this.zoomInertia = this.zoomInertia.mulXY(r).setZeroIf(config.zoomEPS);
+			let scale0 = this.scale;
+			this.zoom = this.zoom.add(this.zoomInertia.mulXY(deltaSec));
+			let scale1 = this.scale;
+			this.scroll = this.scroll.add(this.zoomCenter).div(scale0).mul(scale1).sub(this.zoomCenter);
+			let r = Math.pow(Math.pow(10.0, -config.zoom.inertiaDamping), deltaSec);
+			this.zoomInertia = this.zoomInertia.mulXY(r).setZeroIf(config.zoom.eps);
 		}
 		//
-		this.element.style.left = (-this.scroll.x) + "px";
-		this.element.style.top = (-this.scroll.y) + "px";
-		let mag = this.magnification;
-		this.element.style.transform = `scale(${mag.x}, ${mag.y})`;
-		this.nodeContentRule.style.display = mag.size() < .5 ? "none" : "block";
-		this.nodeContentRule.style.transform = `scale(${1.0 / mag.x}, ${1.0 / mag.y})`;
-		let view = this.viewRect;
-		let {hide, show} = this.rectTree.update(view);
-		for (var n of hide) {
-			if (n.element && n.element.parentNode) {
-				n.element.parentNode.removeChild(n.element);
+		if (!this.scroll.equals(this.scrollBefore) || !this.zoom.equals(this.zoomBefore)) {
+			this.element.style.left = (-this.scroll.x) + "px";
+			this.element.style.top = (-this.scroll.y) + "px";
+			let sclae = this.scale;
+			this.element.style.transform = `scale(${sclae.x}, ${sclae.y})`;
+			this.nodeContentRule.style.display = sclae.size() < .5 ? "none" : "block";
+			this.nodeContentRule.style.transform = `scale(${1.0 / sclae.x}, ${1.0 / sclae.y})`;
+			let view = this.viewRect;
+			let {hide, show} = this.rectTree.update(view);
+			for (var n of hide) {
+				if (n.element && n.element.parentNode) {
+					n.element.parentNode.removeChild(n.element);
+				}
+			}
+			for (var n of show) {
+				if (!n.element.parentNode && n.rect.intersects(view)) {
+					this.element.appendChild(n.element);
+				}
 			}
 		}
-		for (var n of show) {
-			if (!n.element.parentNode && n.rect.intersects(view)) {
-				this.element.appendChild(n.element);
-			}
-		}
+		//
+		this.scrollBefore = this.scroll.clone();
+		this.zoomBefore = this.zoom.clone();
 	}
 
 }
