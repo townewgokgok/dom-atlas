@@ -6,11 +6,11 @@ export default class Node {
 	content: HTMLElement;
 	rect: Rect;
 
-	constructor(x: number, y: number, w: number, h: number, klass: string, html: string) {
+	constructor(x: number, y: number, w: number, h: number, color: string, html: string) {
 		this.rect = new Rect(x, y, w, h);
 		this.element = document.createElement("div");
 		this.element.classList.add("node");
-		this.element.classList.add(klass);
+		this.element.style.backgroundColor = color;
 		this.content = document.createElement("div");
 		this.content.classList.add("node__content");
 		this.content.innerHTML = html;

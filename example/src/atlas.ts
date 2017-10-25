@@ -6,6 +6,10 @@ import Node from "./node";
 import RectTree from "./recttree";
 
 const config = {
+	debug: {
+		showFps: true,
+		disableTree: false,//true,
+	},
 	scroll: {
 		panInputCoef: 100.0,
 		wheelInputCoef: 2.0,
@@ -58,7 +62,9 @@ export default class Atlas {
 		this.container = document.getElementById(id);
 		this.container.appendChild(this.element);
 		this.nodes = [];
-		this.rectTree = new RectTree<Node>();
+		if (!config.debug.disableTree) {
+			this.rectTree = new RectTree<Node>();
+		}
 		this.scroll = new Vec();
 		this.scrollBefore = Vec.nan;
 		this.scrollInertia = new Vec();
@@ -97,10 +103,12 @@ export default class Atlas {
 
 	addNode(node: Node) {
 		this.nodes.push(node);
-		if (node.rect.intersects(this.viewRect)) {
+		if (!this.rectTree || node.rect.intersects(this.viewRect)) {
 			this.element.appendChild(node.element);
 		}
-		this.rectTree.insert(node.rect, node);
+		if (this.rectTree) {
+			this.rectTree.insert(node.rect, node);
+		}
 		this.bound = this.bound.extend(node.rect);
 	}
 
@@ -181,7 +189,10 @@ export default class Atlas {
 
 	onWheel(e: WheelEvent) {
 		if (e.shiftKey) {
-			let delta = new Vec(e.deltaY, e.deltaY);
+			let delta = new Vec(e.deltaX, e.deltaY);
+			let v = delta.size();
+			v *= Math.sign((delta.x||1.0) * (delta.y||1.0));
+			delta = new Vec(v, v);
 			this.zoomCenter = this.mousePos(e);
 			this.zoomInertia = this.zoomInertia.add(delta.mulXY(config.zoom.inputCoef));
 		}
@@ -207,6 +218,10 @@ export default class Atlas {
 	}
 
 	onTick(deltaSec: number) {
+		if (config.debug.showFps) {
+			let fps = Math.round(1.0/deltaSec).toString();
+			document.getElementById("fps").textContent = ("  " + fps).substr(-3) + " FPS";
+		}
 		if (!this.scrollAtPanStart) {
 			let scroll = this.scroll.add(this.scrollInertia.mulXY(deltaSec));
 			this.scroll = this.viewBound.pullBack(scroll, deltaSec, 1.0 - Math.pow(10.0, -config.pullBack.dynamicRate));
@@ -235,16 +250,18 @@ export default class Atlas {
 			this.element.style.transform = `scale(${sclae.x}, ${sclae.y})`;
 			this.nodeContentRule.style.display = sclae.size() < .5 ? "none" : "block";
 			this.nodeContentRule.style.transform = `scale(${1.0 / sclae.x}, ${1.0 / sclae.y})`;
-			let view = this.viewRect;
-			let {hide, show} = this.rectTree.update(view);
-			for (var n of hide) {
-				if (n.element && n.element.parentNode) {
-					n.element.parentNode.removeChild(n.element);
+			if (this.rectTree) {
+				let view = this.viewRect;
+				let {hide, show} = this.rectTree.update(view);
+				for (var n of hide) {
+					if (n.element && n.element.parentNode) {
+						n.element.parentNode.removeChild(n.element);
+					}
 				}
-			}
-			for (var n of show) {
-				if (!n.element.parentNode && n.rect.intersects(view)) {
-					this.element.appendChild(n.element);
+				for (var n of show) {
+					if (!n.element.parentNode && n.rect.intersects(view)) {
+						this.element.appendChild(n.element);
+					}
 				}
 			}
 		}
